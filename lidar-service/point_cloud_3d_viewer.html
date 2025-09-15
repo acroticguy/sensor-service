@@ -1,0 +1,866 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LiDAR 3D Point Cloud Viewer - Vessel Berthing System</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.7/dat.gui.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1a1a2e;
+            color: #ffffff;
+            overflow: hidden;
+        }
+
+        .container {
+            display: grid;
+            grid-template-columns: 300px 1fr;
+            height: 100vh;
+        }
+
+        .control-panel {
+            background: linear-gradient(135deg, #16213e 0%, #0f3460 100%);
+            padding: 20px;
+            overflow-y: auto;
+            border-right: 2px solid #0ea5e9;
+            box-shadow: 2px 0 10px rgba(0,0,0,0.3);
+        }
+
+        .viewer-container {
+            position: relative;
+            background: #0f172a;
+        }
+
+        .panel-section {
+            background: rgba(255,255,255,0.1);
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 20px;
+            border: 1px solid rgba(14,165,233,0.3);
+        }
+
+        .panel-title {
+            font-size: 16px;
+            font-weight: bold;
+            color: #0ea5e9;
+            margin-bottom: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+
+        .status-connected { background: #10b981; }
+        .status-streaming { background: #f59e0b; }
+        .status-error { background: #ef4444; }
+        .status-disconnected { background: #6b7280; }
+
+        .metric-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+            padding: 4px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .metric-label {
+            font-size: 12px;
+            color: #94a3b8;
+            text-transform: uppercase;
+        }
+
+        .metric-value {
+            font-size: 14px;
+            font-weight: bold;
+            color: #ffffff;
+            font-family: 'Courier New', monospace;
+        }
+
+
+        .control-button {
+            background: linear-gradient(135deg, #0ea5e9 0%, #3b82f6 100%);
+            border: none;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: bold;
+            text-transform: uppercase;
+            transition: all 0.3s ease;
+            width: 100%;
+            margin: 5px 0;
+        }
+
+        .control-button:hover {
+            background: linear-gradient(135deg, #0284c7 0%, #2563eb 100%);
+            transform: translateY(-1px);
+        }
+
+        .control-button:disabled {
+            background: #6b7280;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .distance-legend {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            font-size: 11px;
+        }
+
+        .legend-color {
+            width: 16px;
+            height: 16px;
+            border-radius: 2px;
+            margin-right: 8px;
+        }
+
+        .stats-overlay {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(0,0,0,0.8);
+            padding: 15px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            border: 1px solid rgba(14,165,233,0.5);
+        }
+
+        .fps-counter {
+            color: #10b981;
+            font-weight: bold;
+        }
+
+        .point-count {
+            color: #0ea5e9;
+            font-weight: bold;
+        }
+
+        #canvas-container {
+            width: 100%;
+            height: 100%;
+        }
+
+        .loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.8);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+            z-index: 1000;
+        }
+
+        .loading-spinner {
+            width: 60px;
+            height: 60px;
+            border: 4px solid rgba(14,165,233,0.3);
+            border-top: 4px solid #0ea5e9;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 20px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="control-panel">
+            <div class="panel-section">
+                <div class="panel-title">🚢 Vessel Berthing System</div>
+                <div class="metric-row">
+                    <span class="metric-label">Status</span>
+                    <span class="metric-value">
+                        <span class="status-indicator status-disconnected" id="connectionStatus"></span>
+                        <span id="statusText">Disconnected</span>
+                    </span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">Sensor ID</span>
+                    <span class="metric-value" id="sensorId">1PQDL6H001N639</span>
+                </div>
+            </div>
+
+            <div class="panel-section">
+                <div class="panel-title">📏 Distance Measurements</div>
+                <div class="metric-row">
+                    <span class="metric-label">Center Distance</span>
+                    <span class="metric-value" id="centerDistance">0.000 m</span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">Speed</span>
+                    <span class="metric-value" id="vesselSpeed">0.0000 m/s</span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">Confidence</span>
+                    <span class="metric-value" id="confidence">0.0%</span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">Mode</span>
+                    <span class="metric-value" id="detectionMode">WAITING</span>
+                </div>
+            </div>
+
+
+            <div class="panel-section">
+                <div class="panel-title">🎨 Distance Color Legend (1m intervals)</div>
+                <div class="distance-legend">
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #ff0000;"></div>
+                        <span>0-1m</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #ff3300;"></div>
+                        <span>1-2m</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #ff6600;"></div>
+                        <span>2-3m</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #ff9900;"></div>
+                        <span>3-4m</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #ffcc00;"></div>
+                        <span>4-5m</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #ffff00;"></div>
+                        <span>5-6m</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #ccff00;"></div>
+                        <span>6-7m</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #99ff00;"></div>
+                        <span>7-8m</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #66ff00;"></div>
+                        <span>8-9m</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #33ff00;"></div>
+                        <span>9-10m</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #00ff33;"></div>
+                        <span>10-12m</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #00ff99;"></div>
+                        <span>15-20m</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #00ccff;"></div>
+                        <span>20-25m</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #0066ff;"></div>
+                        <span>30-40m</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #6600ff;"></div>
+                        <span>50-75m</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #cc0099;"></div>
+                        <span>100m+</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel-section">
+                <div class="panel-title">⚙️ Controls</div>
+                <button class="control-button" id="startStreaming">Start Streaming</button>
+                <button class="control-button" id="stopStreaming">Stop Streaming</button>
+                <button class="control-button" id="resetView">Reset Camera</button>
+                <button class="control-button" id="clearPoints">Clear Points</button>
+                <button class="control-button" id="toggleDynamicDrawing">Dynamic Drawing: ON</button>
+            </div>
+
+            <div class="panel-section">
+                <div class="panel-title">📊 Point Cloud Stats</div>
+                <div class="metric-row">
+                    <span class="metric-label">Points Rendered</span>
+                    <span class="metric-value" id="pointsRendered">0</span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">Total Captured</span>
+                    <span class="metric-value" id="totalPoints">0</span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">FPS</span>
+                    <span class="metric-value" id="fpsCounter">0</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="viewer-container">
+            <div id="canvas-container"></div>
+            <div class="stats-overlay">
+                <div class="fps-counter">FPS: <span id="fpsDisplay">0</span></div>
+                <div class="point-count">Points: <span id="pointDisplay">0</span></div>
+                <div style="color: #94a3b8; margin-top: 5px;">
+                    <div>Rotation: Mouse drag</div>
+                    <div>Zoom: Mouse wheel</div>
+                    <div>Pan: Right click + drag</div>
+                </div>
+            </div>
+            <div class="loading-overlay" id="loadingOverlay">
+                <div class="loading-spinner"></div>
+                <div>Initializing 3D Point Cloud Viewer...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Configuration
+        const CONFIG = {
+            WEBSOCKET_URL: 'ws://localhost:8001/ws/sensors/1PQDL6H001N639/stream',
+            API_BASE: 'http://localhost:8001/api/v1',
+            SENSOR_ID: '1PQDL6H001N639',
+            MAX_POINTS: 100000, // Increased for raw data
+            POINT_SIZE: 0.015
+        };
+
+        // Global variables
+        let scene, camera, renderer, controls;
+        let pointCloud = null;
+        let accumulatedPositions = [];
+        let accumulatedColors = [];
+        let maxAccumulatedPoints = 500000; // Increased for beautiful drawings
+        let isStreaming = false;
+        let animationId = null;
+        let lastFrameTime = 0;
+        let frameCount = 0;
+        let fpsUpdateTime = 0;
+        let websocket = null;
+        let reconnectAttempts = 0;
+        let maxReconnectAttempts = 5;
+        let pointFadeEffect = true; // Enable point fading for beautiful effect
+        
+        // Movement detection for dynamic drawing
+        let lastCenterPosition = { x: 0, y: 0, z: 0 };
+        let movementThreshold = 0.5; // meters - clear points if laser moves more than this
+        let dynamicDrawingMode = true; // Auto-clear when laser moves
+
+        // Initialize Three.js scene
+        function initThreeJS() {
+            const container = document.getElementById('canvas-container');
+            
+            // Scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x0f172a);
+            
+            // Camera
+            camera = new THREE.PerspectiveCamera(75, container.clientWidth / container.clientHeight, 0.1, 1000);
+            camera.position.set(10, 10, 10);
+            camera.lookAt(0, 0, 0);
+            
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(container.clientWidth, container.clientHeight);
+            renderer.setClearColor(0x0f172a);
+            container.appendChild(renderer.domElement);
+            
+            // Controls (simple mouse controls)
+            addMouseControls();
+            
+            // Grid helper
+            const gridHelper = new THREE.GridHelper(100, 100, 0x444444, 0x222222);
+            scene.add(gridHelper);
+            
+            // Axes helper
+            const axesHelper = new THREE.AxesHelper(5);
+            scene.add(axesHelper);
+            
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
+            scene.add(ambientLight);
+            
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(50, 50, 50);
+            scene.add(directionalLight);
+            
+            // Handle window resize
+            window.addEventListener('resize', onWindowResize);
+            
+            console.log('3D Point Cloud Viewer initialized');
+        }
+
+        // Add mouse controls for camera
+        function addMouseControls() {
+            let isMouseDown = false;
+            let isRightMouseDown = false;
+            let mouseX = 0;
+            let mouseY = 0;
+            let targetRotationX = 0;
+            let targetRotationY = 0;
+            let targetX = camera.position.x;
+            let targetY = camera.position.y;
+            let targetZ = camera.position.z;
+
+            const container = renderer.domElement;
+
+            container.addEventListener('mousedown', (event) => {
+                event.preventDefault();
+                if (event.button === 0) { // Left mouse button
+                    isMouseDown = true;
+                } else if (event.button === 2) { // Right mouse button
+                    isRightMouseDown = true;
+                }
+                mouseX = event.clientX;
+                mouseY = event.clientY;
+            });
+
+            container.addEventListener('mouseup', (event) => {
+                event.preventDefault();
+                isMouseDown = false;
+                isRightMouseDown = false;
+            });
+
+            container.addEventListener('mousemove', (event) => {
+                event.preventDefault();
+                if (isMouseDown) {
+                    // Rotation
+                    const deltaX = event.clientX - mouseX;
+                    const deltaY = event.clientY - mouseY;
+                    
+                    targetRotationY += deltaX * 0.01;
+                    targetRotationX += deltaY * 0.01;
+                    
+                    const distance = camera.position.distanceTo(new THREE.Vector3(0, 0, 0));
+                    camera.position.x = distance * Math.sin(targetRotationY) * Math.cos(targetRotationX);
+                    camera.position.y = distance * Math.sin(targetRotationX);
+                    camera.position.z = distance * Math.cos(targetRotationY) * Math.cos(targetRotationX);
+                    camera.lookAt(0, 0, 0);
+                } else if (isRightMouseDown) {
+                    // Pan
+                    const deltaX = event.clientX - mouseX;
+                    const deltaY = event.clientY - mouseY;
+                    
+                    const vector = new THREE.Vector3();
+                    camera.getWorldDirection(vector);
+                    
+                    camera.position.x += deltaX * 0.01;
+                    camera.position.z += deltaY * 0.01;
+                }
+                
+                mouseX = event.clientX;
+                mouseY = event.clientY;
+            });
+
+            // Zoom with mouse wheel
+            container.addEventListener('wheel', (event) => {
+                event.preventDefault();
+                const distance = camera.position.distanceTo(new THREE.Vector3(0, 0, 0));
+                const newDistance = distance + event.deltaY * 0.01;
+                if (newDistance > 1 && newDistance < 500) {
+                    const direction = camera.position.clone().normalize();
+                    camera.position.copy(direction.multiplyScalar(newDistance));
+                }
+            });
+
+            // Prevent context menu
+            container.addEventListener('contextmenu', (event) => {
+                event.preventDefault();
+            });
+        }
+
+        // Create point cloud geometry
+        function createPointCloud() {
+            if (pointCloud) {
+                scene.remove(pointCloud);
+            }
+
+            const geometry = new THREE.BufferGeometry();
+            const material = new THREE.PointsMaterial({
+                size: CONFIG.POINT_SIZE,
+                vertexColors: true,
+                sizeAttenuation: true
+            });
+
+            pointCloud = new THREE.Points(geometry, material);
+            scene.add(pointCloud);
+        }
+
+        // Update point cloud with new data - ACCUMULATION MODE for beautiful drawings
+        function updatePointCloud(points) {
+            if (!pointCloud) {
+                createPointCloud();
+            }
+
+            // Detect laser movement for dynamic drawing
+            if (dynamicDrawingMode && points.length > 0) {
+                // Calculate center of current points
+                let centerX = 0, centerY = 0, centerZ = 0;
+                for (let i = 0; i < points.length; i++) {
+                    centerX += points[i].x;
+                    centerY += points[i].y;
+                    centerZ += points[i].z;
+                }
+                centerX /= points.length;
+                centerY /= points.length;
+                centerZ /= points.length;
+                
+                // Check if laser has moved significantly
+                const movement = Math.sqrt(
+                    Math.pow(centerX - lastCenterPosition.x, 2) +
+                    Math.pow(centerY - lastCenterPosition.y, 2) +
+                    Math.pow(centerZ - lastCenterPosition.z, 2)
+                );
+                
+                if (movement > movementThreshold && accumulatedPositions.length > 0) {
+                    // Clear accumulated points - laser has moved to new area
+                    accumulatedPositions = [];
+                    accumulatedColors = [];
+                    console.log(`Laser moved ${movement.toFixed(2)}m - clearing points for new drawing`);
+                }
+                
+                // Update last position
+                lastCenterPosition = { x: centerX, y: centerY, z: centerZ };
+            }
+
+            // Add new points to accumulated arrays
+            for (let i = 0; i < points.length; i++) {
+                const point = points[i];
+                
+                // Add position (converted to Three.js coordinates)
+                accumulatedPositions.push(point.x);
+                accumulatedPositions.push(point.z); // Z is up in Three.js
+                accumulatedPositions.push(-point.y); // Y becomes -Z
+                
+                // Add color based on distance with slight transparency for depth effect
+                const color = getDistanceColor(point.distance);
+                accumulatedColors.push(color.r);
+                accumulatedColors.push(color.g);
+                accumulatedColors.push(color.b);
+            }
+
+            // Manage memory - keep only the most recent points for smooth performance
+            const totalPoints = accumulatedPositions.length / 3;
+            if (totalPoints > maxAccumulatedPoints) {
+                const pointsToRemove = totalPoints - maxAccumulatedPoints;
+                const elementsToRemove = pointsToRemove * 3;
+                
+                // Remove oldest points (from beginning)
+                accumulatedPositions.splice(0, elementsToRemove);
+                accumulatedColors.splice(0, elementsToRemove);
+            }
+
+            // Update geometry with all accumulated points
+            const finalPositions = new Float32Array(accumulatedPositions);
+            const finalColors = new Float32Array(accumulatedColors);
+
+            pointCloud.geometry.setAttribute('position', new THREE.BufferAttribute(finalPositions, 3));
+            pointCloud.geometry.setAttribute('color', new THREE.BufferAttribute(finalColors, 3));
+            pointCloud.geometry.attributes.position.needsUpdate = true;
+            pointCloud.geometry.attributes.color.needsUpdate = true;
+
+            // Update stats
+            document.getElementById('pointsRendered').textContent = (finalPositions.length / 3).toLocaleString();
+        }
+
+        // Get color based on distance - 1 meter intervals with smooth gradients
+        function getDistanceColor(distance) {
+            // More granular color coding every 1 meter
+            if (distance < 1) {
+                return { r: 1.0, g: 0.0, b: 0.0 }; // Bright Red - 0-1m
+            } else if (distance < 2) {
+                return { r: 1.0, g: 0.2, b: 0.0 }; // Red-Orange - 1-2m
+            } else if (distance < 3) {
+                return { r: 1.0, g: 0.4, b: 0.0 }; // Orange - 2-3m
+            } else if (distance < 4) {
+                return { r: 1.0, g: 0.6, b: 0.0 }; // Orange-Yellow - 3-4m
+            } else if (distance < 5) {
+                return { r: 1.0, g: 0.8, b: 0.0 }; // Yellow-Orange - 4-5m
+            } else if (distance < 6) {
+                return { r: 1.0, g: 1.0, b: 0.0 }; // Yellow - 5-6m
+            } else if (distance < 7) {
+                return { r: 0.8, g: 1.0, b: 0.0 }; // Yellow-Green - 6-7m
+            } else if (distance < 8) {
+                return { r: 0.6, g: 1.0, b: 0.0 }; // Light Green - 7-8m
+            } else if (distance < 9) {
+                return { r: 0.4, g: 1.0, b: 0.0 }; // Green - 8-9m
+            } else if (distance < 10) {
+                return { r: 0.2, g: 1.0, b: 0.0 }; // Bright Green - 9-10m
+            } else if (distance < 12) {
+                return { r: 0.0, g: 1.0, b: 0.2 }; // Green-Cyan - 10-12m
+            } else if (distance < 15) {
+                return { r: 0.0, g: 1.0, b: 0.4 }; // Cyan-Green - 12-15m
+            } else if (distance < 20) {
+                return { r: 0.0, g: 1.0, b: 0.6 }; // Cyan - 15-20m
+            } else if (distance < 25) {
+                return { r: 0.0, g: 0.8, b: 1.0 }; // Light Blue - 20-25m
+            } else if (distance < 30) {
+                return { r: 0.0, g: 0.6, b: 1.0 }; // Blue - 25-30m
+            } else if (distance < 40) {
+                return { r: 0.0, g: 0.4, b: 1.0 }; // Deep Blue - 30-40m
+            } else if (distance < 50) {
+                return { r: 0.2, g: 0.2, b: 1.0 }; // Blue-Purple - 40-50m
+            } else if (distance < 75) {
+                return { r: 0.4, g: 0.0, b: 1.0 }; // Purple - 50-75m
+            } else if (distance < 100) {
+                return { r: 0.6, g: 0.0, b: 0.8 }; // Purple-Magenta - 75-100m
+            } else {
+                return { r: 0.8, g: 0.0, b: 0.6 }; // Magenta - 100m+
+            }
+        }
+
+        // WebSocket connection management
+        function connectWebSocket() {
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                return; // Already connected
+            }
+            
+            console.log('Connecting to WebSocket:', CONFIG.WEBSOCKET_URL);
+            websocket = new WebSocket(CONFIG.WEBSOCKET_URL);
+            
+            websocket.onopen = function(event) {
+                console.log('WebSocket connected');
+                reconnectAttempts = 0;
+                updateStatus('connected');
+            };
+            
+            websocket.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    handleWebSocketData(data);
+                } catch (error) {
+                    console.error('Error parsing WebSocket data:', error);
+                }
+            };
+            
+            websocket.onclose = function(event) {
+                console.log('WebSocket disconnected:', event.code, event.reason);
+                updateStatus('disconnected');
+                
+                // Attempt to reconnect
+                if (isStreaming && reconnectAttempts < maxReconnectAttempts) {
+                    reconnectAttempts++;
+                    console.log(`Reconnecting in 2 seconds... (attempt ${reconnectAttempts}/${maxReconnectAttempts})`);
+                    setTimeout(connectWebSocket, 2000);
+                }
+            };
+            
+            websocket.onerror = function(error) {
+                console.error('WebSocket error:', error);
+                updateStatus('error');
+            };
+        }
+        
+        // Handle incoming WebSocket data
+        function handleWebSocketData(data) {
+            if (data.type === 'point_cloud_data') {
+                // Raw point cloud data
+                if (data.points && data.points.length > 0) {
+                    updatePointCloud(data.points);
+                    updateStatus('streaming');
+                }
+                
+                // Update metrics if available
+                if (data.center_stats) {
+                    updateMetrics(data);
+                }
+                
+                
+                // Update total points captured
+                if (data.total_points_captured) {
+                    document.getElementById('totalPoints').textContent = data.total_points_captured.toLocaleString();
+                }
+            } else if (data.type === 'sensor_status') {
+                // Sensor status updates
+                updateStatus(data.status);
+            } else if (data.type === 'error') {
+                console.error('WebSocket error message:', data.message);
+                updateStatus('error');
+            }
+        }
+        
+        
+        // Disconnect WebSocket
+        function disconnectWebSocket() {
+            if (websocket) {
+                websocket.close();
+                websocket = null;
+            }
+        }
+
+        // Update metrics display
+        function updateMetrics(data) {
+            if (data.center_stats) {
+                document.getElementById('centerDistance').textContent = `${data.center_stats.stable_distance} m`;
+                document.getElementById('vesselSpeed').textContent = `${data.center_stats.speed_mps} m/s`;
+                document.getElementById('confidence').textContent = `${(data.center_stats.confidence * 100).toFixed(1)}%`;
+                document.getElementById('detectionMode').textContent = data.center_stats.mode.toUpperCase();
+            }
+            
+            if (data.total_points_captured) {
+                document.getElementById('totalPoints').textContent = data.total_points_captured.toLocaleString();
+            }
+        }
+
+        // Update connection status
+        function updateStatus(status) {
+            const statusIndicator = document.getElementById('connectionStatus');
+            const statusText = document.getElementById('statusText');
+            
+            statusIndicator.className = 'status-indicator';
+            
+            switch (status) {
+                case 'streaming':
+                    statusIndicator.classList.add('status-streaming');
+                    statusText.textContent = 'Streaming';
+                    break;
+                case 'connected':
+                    statusIndicator.classList.add('status-connected');
+                    statusText.textContent = 'Connected';
+                    break;
+                case 'error':
+                    statusIndicator.classList.add('status-error');
+                    statusText.textContent = 'Error';
+                    break;
+                default:
+                    statusIndicator.classList.add('status-disconnected');
+                    statusText.textContent = 'Disconnected';
+            }
+        }
+
+
+        // Animation loop
+        function animate() {
+            animationId = requestAnimationFrame(animate);
+            
+            const currentTime = performance.now();
+            frameCount++;
+            
+            // Update FPS counter every second
+            if (currentTime - fpsUpdateTime >= 1000) {
+                const fps = Math.round(frameCount * 1000 / (currentTime - fpsUpdateTime));
+                document.getElementById('fpsCounter').textContent = fps;
+                document.getElementById('fpsDisplay').textContent = fps;
+                document.getElementById('pointDisplay').textContent = (accumulatedPositions.length / 3).toLocaleString();
+                
+                frameCount = 0;
+                fpsUpdateTime = currentTime;
+                
+            }
+            
+            renderer.render(scene, camera);
+        }
+
+        // Window resize handler
+        function onWindowResize() {
+            const container = document.getElementById('canvas-container');
+            camera.aspect = container.clientWidth / container.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        }
+
+        // Event listeners
+        document.getElementById('startStreaming').addEventListener('click', () => {
+            isStreaming = true;
+            connectWebSocket();
+            document.getElementById('startStreaming').disabled = true;
+            document.getElementById('stopStreaming').disabled = false;
+        });
+
+        document.getElementById('stopStreaming').addEventListener('click', () => {
+            isStreaming = false;
+            disconnectWebSocket();
+            updateStatus('disconnected');
+            document.getElementById('startStreaming').disabled = false;
+            document.getElementById('stopStreaming').disabled = true;
+        });
+
+        document.getElementById('resetView').addEventListener('click', () => {
+            camera.position.set(10, 10, 10);
+            camera.lookAt(0, 0, 0);
+        });
+
+        document.getElementById('clearPoints').addEventListener('click', () => {
+            // Clear all accumulated points for fresh start
+            accumulatedPositions = [];
+            accumulatedColors = [];
+            
+            if (pointCloud) {
+                scene.remove(pointCloud);
+                pointCloud = null;
+                createPointCloud();
+            }
+            
+            document.getElementById('pointsRendered').textContent = '0';
+        });
+
+        document.getElementById('toggleDynamicDrawing').addEventListener('click', () => {
+            dynamicDrawingMode = !dynamicDrawingMode;
+            const button = document.getElementById('toggleDynamicDrawing');
+            button.textContent = `Dynamic Drawing: ${dynamicDrawingMode ? 'ON' : 'OFF'}`;
+            button.style.background = dynamicDrawingMode ? 
+                'linear-gradient(135deg, #0ea5e9 0%, #3b82f6 100%)' : 
+                'linear-gradient(135deg, #6b7280 0%, #4b5563 100%)';
+            
+            console.log(`Dynamic drawing mode: ${dynamicDrawingMode ? 'enabled' : 'disabled'}`);
+        });
+
+
+        // Initialize everything
+        function init() {
+            initThreeJS();
+            createPointCloud();
+            animate();
+            
+            // Initialize button states
+            document.getElementById('startStreaming').disabled = false;
+            document.getElementById('stopStreaming').disabled = true;
+            
+            // Hide loading overlay
+            document.getElementById('loadingOverlay').style.display = 'none';
+            
+            console.log('3D Point Cloud Viewer ready - WebSocket mode');
+        }
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            disconnectWebSocket();
+        });
+
+        // Start when page loads
+        window.addEventListener('load', init);
+    </script>
+</body>
+</html>

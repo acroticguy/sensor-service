@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LiDAR Point Cloud Viewer</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f0f0f0;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+        }
+        .controls {
+            margin: 20px 0;
+            padding: 15px;
+            background-color: #f8f8f8;
+            border-radius: 4px;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        .start { background-color: #4CAF50; color: white; }
+        .stop { background-color: #f44336; color: white; }
+        .get-data { background-color: #2196F3; color: white; }
+        button:hover { opacity: 0.8; }
+        .status {
+            margin: 20px 0;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .status.connected { background-color: #d4edda; color: #155724; }
+        .status.streaming { background-color: #cce5ff; color: #004085; }
+        .status.error { background-color: #f8d7da; color: #721c24; }
+        .point-data {
+            margin: 20px 0;
+            max-height: 400px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            padding: 8px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background-color: #f2f2f2;
+            font-weight: bold;
+        }
+        .stats {
+            margin: 20px 0;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+        .stat-box {
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+        }
+        .stat-label {
+            color: #666;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>LiDAR Point Cloud Viewer</h1>
+        
+        <div class="controls">
+            <h3>Legacy Sensor Control (for compatibility)</h3>
+            <button class="get-data" onclick="getLatestData()">Get Latest Data</button>
+            <label>
+                <input type="checkbox" id="autoRefresh"> Auto-refresh (1s)
+            </label>
+        </div>
+        
+        <div class="controls">
+            <h3>Berthing Mode Control</h3>
+            <input type="text" id="berthingSensorIds" placeholder="Enter sensor IDs (comma-separated)" value="1PQDL6H001N639" style="width: 300px; padding: 8px; margin: 5px;">
+            <button class="start" onclick="enableBerthingMode()">Enable Berthing Mode</button>
+            <button class="stop" onclick="disableBerthingMode()">Disable Berthing Mode</button>
+            <button class="get-data" onclick="getBerthingStatus()">Get Berthing Status</button>
+        </div>
+        
+        <div id="status" class="status">
+            Status: Not connected
+        </div>
+        
+        <div class="stats">
+            <div class="stat-box">
+                <div class="stat-value" id="centerDistance">0.000</div>
+                <div class="stat-label">Center Distance (m)</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value" id="centerSpeed">0.0000</div>
+                <div class="stat-label">Speed (m/s) - Laser Grade</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value" id="centerIntensity">0</div>
+                <div class="stat-label">Center Intensity</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value" id="confidence">0.0</div>
+                <div class="stat-label">Lock Confidence</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value" id="pointCount">0</div>
+                <div class="stat-label">Points Captured</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value" id="mode">waiting</div>
+                <div class="stat-label">Detection Mode</div>
+            </div>
+        </div>
+        
+        <h3>Point Cloud Data (First 100 points)</h3>
+        <div class="point-data">
+            <table id="pointTable">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>X (m)</th>
+                        <th>Y (m)</th>
+                        <th>Z (m)</th>
+                        <th>Distance (m)</th>
+                        <th>Intensity</th>
+                        <th>Return #</th>
+                    </tr>
+                </thead>
+                <tbody id="pointTableBody">
+                    <tr><td colspan="7" style="text-align: center;">No data available</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8001/api/v1';
+        const SENSOR_ID = '1PQDL6H001N639';
+        let refreshInterval = null;
+
+        function updateStatus(message, type = 'connected') {
+            const statusEl = document.getElementById('status');
+            statusEl.textContent = `Status: ${message}`;
+            statusEl.className = `status ${type}`;
+        }
+
+
+        async function getBerthingData() {
+            try {
+                // Use the new simplified berthing data endpoint
+                const response = await fetch(`${API_BASE}/berthing/data/sensor/${SENSOR_ID}`);
+                const data = await response.json();
+                
+                if (response.ok && data.status === 'active') {
+                    // Update display directly with the data from backend
+                    // Backend already handles averaging and filtering
+                    updateBerthingDisplay(data);
+                }
+            } catch (error) {
+                console.error('Error fetching berthing data:', error);
+            }
+        }
+        function updateBerthingDisplay(data) {
+            // Update distance
+            const distance = data.distance || data.stable_distance || 0;
+            document.getElementById('centerDistance').textContent = distance.toFixed(3);
+            
+            // Update speed - use trend_speed for LDM 302-like accuracy (mimics professional laser)
+            const speed = data.trend_speed !== undefined ? data.trend_speed : (data.sa_averaged_speed || data.speed || 0);
+            document.getElementById('centerSpeed').textContent = speed.toFixed(4);
+            
+            // Update confidence based on movement
+            const confidence = data.confidence || 0;
+            document.getElementById('confidence').textContent = confidence.toFixed(2);
+            
+            // Update mode/phase
+            const modeEl = document.getElementById('mode');
+            if (data.is_moving) {
+                modeEl.textContent = data.movement_phase.toUpperCase();
+                modeEl.style.color = '#ffc107'; // Yellow for moving
+            } else {
+                modeEl.textContent = 'STATIONARY';
+                modeEl.style.color = '#28a745'; // Green for stationary
+            }
+            
+            // Color code based on movement
+            const distanceEl = document.getElementById('centerDistance');
+            const speedEl = document.getElementById('centerSpeed');
+            
+            // LDM 302-style color coding with professional thresholds
+            if (Math.abs(speed) > 0.003) {  // > 3mm/s - significant movement for laser systems
+                if (speed < 0) {
+                    speedEl.style.color = '#dc3545'; // Red for approaching
+                } else {
+                    speedEl.style.color = '#ffc107'; // Yellow for departing
+                }
+            } else if (Math.abs(speed) > 0.001) {  // > 1mm/s - precision threshold
+                speedEl.style.color = '#17a2b8'; // Blue for precise movement
+            } else {
+                speedEl.style.color = '#28a745'; // Green for stationary (laser-grade precision)
+            }
+            
+            // Also update with movement status
+            if (data.is_moving && data.direction === 'approaching') {
+                distanceEl.parentElement.style.borderLeft = '3px solid #dc3545';
+            } else if (data.is_moving) {
+                distanceEl.parentElement.style.borderLeft = '3px solid #ffc107';
+            } else {
+                distanceEl.parentElement.style.borderLeft = 'none';
+            }
+            
+            // High confidence = green distance
+            if (confidence >= 0.8) {
+                distanceEl.style.color = '#28a745';
+            } else if (confidence >= 0.5) {
+                distanceEl.style.color = '#ffc107';
+            } else {
+                distanceEl.style.color = '#dc3545';
+            }
+        }
+        
+        async function getLatestData() {
+            try {
+                const response = await fetch(`${API_BASE}/streaming/data/${SENSOR_ID}/latest`);
+                const data = await response.json();
+                
+                if (response.ok && data.center_stats) {
+                    // Update center-focused stats
+                    updateCenterStats(data.center_stats);
+                    
+                    if (data.points && data.points.length > 0) {
+                        updatePointTable(data.points);
+                        updateStatus(`${data.center_stats.mode} - ${data.center_stats.filtered_point_count} center points`, 'streaming');
+                    } else {
+                        updateStatus('Sensor active, waiting for center lock...', 'connected');
+                    }
+                    
+                    // Update point count
+                    document.getElementById('pointCount').textContent = data.total_points_captured || 0;
+                } else if (data.status === 'waiting') {
+                    updateStatus('Waiting for data...', 'connected');
+                } else {
+                    updateStatus('No data available', 'connected');
+                }
+            } catch (error) {
+                updateStatus(`Error: ${error.message}`, 'error');
+            }
+        }
+
+        function updatePointTable(points) {
+            const tbody = document.getElementById('pointTableBody');
+            tbody.innerHTML = '';
+            
+            // Show first 100 points
+            points.slice(0, 100).forEach(point => {
+                const row = tbody.insertRow();
+                row.insertCell(0).textContent = point.point_id;
+                row.insertCell(1).textContent = point.x.toFixed(3);
+                row.insertCell(2).textContent = point.y.toFixed(3);
+                row.insertCell(3).textContent = point.z.toFixed(3);
+                row.insertCell(4).textContent = point.distance.toFixed(3);
+                row.insertCell(5).textContent = point.intensity;
+                row.insertCell(6).textContent = point.return_num || 'N/A';
+            });
+        }
+
+        function updateCenterStats(centerStats) {
+            // Update distance and speed like a Janoptic laser - ensure proper formatting
+            const distance = parseFloat(centerStats.stable_distance || 0);
+            const speed = parseFloat(centerStats.speed_mps || 0);
+            const intensity = parseFloat(centerStats.avg_intensity || 0);
+            const confidence = parseFloat(centerStats.confidence || 0);
+            
+            document.getElementById('centerDistance').textContent = distance.toFixed(3);
+            document.getElementById('centerSpeed').textContent = speed.toFixed(4);
+            document.getElementById('centerIntensity').textContent = Math.round(intensity);
+            document.getElementById('confidence').textContent = confidence.toFixed(2);
+            
+            // Update mode display
+            let modeText = 'WAITING';
+            if (centerStats.mode === 'production_laser_active') {
+                modeText = 'ACTIVE';
+            } else if (centerStats.mode === 'production_laser_sparse') {
+                modeText = 'SPARSE';
+            } else if (centerStats.mode === 'production_laser_no_target') {
+                modeText = 'NO TARGET';
+            }
+            document.getElementById('mode').textContent = modeText;
+            
+            // Color code the distance based on confidence
+            const distanceEl = document.getElementById('centerDistance');
+            const speedEl = document.getElementById('centerSpeed');
+            if (centerStats.confidence >= 0.8) {
+                distanceEl.style.color = '#28a745'; // Green for high confidence
+                speedEl.style.color = '#28a745';
+            } else if (centerStats.confidence >= 0.3) {
+                distanceEl.style.color = '#ffc107'; // Yellow for medium confidence  
+                speedEl.style.color = '#ffc107';
+            } else {
+                distanceEl.style.color = '#6c757d'; // Gray for low confidence
+                speedEl.style.color = '#6c757d';
+            }
+        }
+
+        function startAutoRefresh() {
+            stopAutoRefresh();
+            // Poll berthing data at a reasonable rate (500ms)
+            refreshInterval = setInterval(() => {
+                getBerthingData();  // Get simplified berthing data only
+            }, 500);  // 500ms = 2Hz sampling, reasonable for monitoring
+        }
+
+        function stopAutoRefresh() {
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+                refreshInterval = null;
+            }
+        }
+
+        // Auto-refresh checkbox handler
+        document.getElementById('autoRefresh').addEventListener('change', (e) => {
+            if (e.target.checked) {
+                startAutoRefresh();
+            } else {
+                stopAutoRefresh();
+            }
+        });
+
+        // Berthing Mode Functions
+        async function enableBerthingMode() {
+            try {
+                const sensorIdsInput = document.getElementById('berthingSensorIds').value;
+                const sensorIds = sensorIdsInput.split(',').map(id => id.trim()).filter(id => id);
+                
+                if (sensorIds.length === 0) {
+                    updateStatus('Error: Please enter at least one sensor ID', 'error');
+                    return;
+                }
+                
+                const response = await fetch(`${API_BASE}/connection/berthing-mode/on`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        sensor_ids: sensorIds,
+                        computer_ip: "192.168.1.50"
+                    })
+                });
+                
+                const data = await response.json();
+                if (response.ok) {
+                    updateStatus(`Berthing mode enabled: ${data.connected_sensors.length} connected, ${data.streaming_sensors.length} streaming`, 'streaming');
+                    if (data.center_stats) {
+                        displayBerthingStats(data.center_stats);
+                    }
+                } else {
+                    updateStatus(`Error: ${data.detail || 'Failed to enable berthing mode'}`, 'error');
+                }
+            } catch (error) {
+                updateStatus(`Error: ${error.message}`, 'error');
+            }
+        }
+
+        async function disableBerthingMode() {
+            try {
+                const sensorIdsInput = document.getElementById('berthingSensorIds').value;
+                const sensorIds = sensorIdsInput.split(',').map(id => id.trim()).filter(id => id);
+                
+                if (sensorIds.length === 0) {
+                    updateStatus('Error: Please enter at least one sensor ID', 'error');
+                    return;
+                }
+                
+                const response = await fetch(`${API_BASE}/connection/berthing-mode/off`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        sensor_ids: sensorIds
+                    })
+                });
+                
+                const data = await response.json();
+                if (response.ok) {
+                    updateStatus(`Berthing mode disabled: ${data.message}`, 'connected');
+                } else {
+                    updateStatus(`Error: ${data.detail || 'Failed to disable berthing mode'}`, 'error');
+                }
+            } catch (error) {
+                updateStatus(`Error: ${error.message}`, 'error');
+            }
+        }
+
+        async function getBerthingStatus() {
+            try {
+                const response = await fetch(`${API_BASE}/connection/berthing-mode/status`);
+                const data = await response.json();
+                
+                if (response.ok) {
+                    const status = data.berthing_mode_active ? 'active' : 'inactive';
+                    updateStatus(`Berthing mode ${status}: ${data.connected_sensors.length} connected, ${data.streaming_sensors.length} streaming`, 
+                               data.berthing_mode_active ? 'streaming' : 'connected');
+                    
+                    if (data.center_stats) {
+                        displayBerthingStats(data.center_stats);
+                    }
+                } else {
+                    updateStatus(`Error: ${data.detail || 'Failed to get berthing status'}`, 'error');
+                }
+            } catch (error) {
+                updateStatus(`Error: ${error.message}`, 'error');
+            }
+        }
+
+        function displayBerthingStats(centerStats) {
+            // Display center stats from first sensor or aggregate if multiple
+            const sensorIds = Object.keys(centerStats);
+            if (sensorIds.length > 0) {
+                const firstSensorId = sensorIds[0];
+                const stats = centerStats[firstSensorId];
+                
+                if (stats) {
+                    document.getElementById('centerDistance').textContent = stats.stable_distance || '0.000';
+                    document.getElementById('centerSpeed').textContent = stats.speed_mps || '0.0000';
+                    document.getElementById('centerIntensity').textContent = Math.round(stats.avg_intensity || 0);
+                    document.getElementById('confidence').textContent = stats.confidence || '0.0';
+                    document.getElementById('pointCount').textContent = stats.center_point_count || '0';
+                    document.getElementById('mode').textContent = stats.mode || 'berthing_mode';
+                    
+                    // Color code the distance based on confidence
+                    const distanceEl = document.getElementById('centerDistance');
+                    const speedEl = document.getElementById('centerSpeed');
+                    if (stats.confidence >= 0.8) {
+                        distanceEl.style.color = '#28a745'; // Green for high confidence
+                        speedEl.style.color = '#28a745';
+                    } else if (stats.confidence >= 0.3) {
+                        distanceEl.style.color = '#ffc107'; // Yellow for medium confidence  
+                        speedEl.style.color = '#ffc107';
+                    } else {
+                        distanceEl.style.color = '#6c757d'; // Gray for low confidence
+                        speedEl.style.color = '#6c757d';
+                    }
+                }
+            }
+        }
+
+        // Check initial berthing status
+        async function checkStatus() {
+            try {
+                const response = await fetch(`${API_BASE}/connection/berthing-mode/status`);
+                const data = await response.json();
+                
+                if (data.berthing_mode_active) {
+                    updateStatus(`Berthing mode active: ${data.connected_sensors.length} connected, ${data.streaming_sensors.length} streaming`, 'streaming');
+                    if (data.center_stats) {
+                        displayBerthingStats(data.center_stats);
+                    }
+                } else {
+                    updateStatus('Berthing mode inactive', 'connected');
+                }
+            } catch (error) {
+                updateStatus('Service unavailable', 'error');
+            }
+        }
+
+        // Initialize
+        checkStatus();
+    </script>
+</body>
+</html>
