@@ -63,10 +63,13 @@ services:
       - LIDAR_SERVICE_URL=http://host.docker.internal:8001
       
     volumes:
-      - ./laser-service/logs:/app/logs
+      - laser-service-logs:/app/logs
     restart: unless-stopped
 
 # Define the private network for the isolated services.
 networks:
   services-network:
     driver: bridge
+
+volumes:
+  laser-service-logs:
