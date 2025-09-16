@@ -1,12 +1,14 @@
 from .device_manager import device_manager
 from .drift_manager import drift_monitor
 from ..core.logging_config import logger
-from typing import Dict, Any, List
+from ..core.http_utils import get_lasers_by_berth
+from ..core.config import settings
+from typing import Dict, Any, List, Optional
 import time
 
-async def fetch_berthing_data_for_sensor(sensor_id: str) -> Dict[str, Any]:
+async def fetch_berthing_data_for_sensor(sensor_id: str, berth_sensors_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
-    Retrieves raw berthing data for a specific sensor.
+    Retrieves raw berthing data for a specific sensor with offset corrections applied.
     """
     if not device_manager.lidar_manager or sensor_id not in device_manager.lidar_manager.sensors:
         logger.warning(f"Sensor {sensor_id} not found when fetching core data.")
@@ -21,7 +23,7 @@ async def fetch_berthing_data_for_sensor(sensor_id: str) -> Dict[str, Any]:
 
     # Extract essential data
     timestamp = sync_data.get("timestamp", 0)
-    distance = center_stats.get("stable_distance", 0.0)
+    raw_distance = center_stats.get("stable_distance", 0.0)
     speed = center_stats.get("speed_mps", 0.0)
     speed_mm_s = center_stats.get("speed_mm_s", 0.0)
     instant_speed = center_stats.get("instant_speed", 0.0)
@@ -31,6 +33,44 @@ async def fetch_berthing_data_for_sensor(sensor_id: str) -> Dict[str, Any]:
     is_moving = center_stats.get("is_vessel_moving", False)
     movement_phase = center_stats.get("movement_phase", "unknown")
     confidence = center_stats.get("speed_confidence", 0.0)
+
+    # Apply offset corrections if sensor info is available
+    corrected_distance = raw_distance
+    offset_y = None
+    cut_off_distance = None
+    baseline_distance = None
+
+    if berth_sensors_info and sensor_id in berth_sensors_info:
+        sensor_info = berth_sensors_info[sensor_id]
+        laser_info = sensor_info.get('laser_info', {})
+
+        # Apply offset_y correction
+        offset_y = laser_info.get('offset_y')
+        if offset_y is not None:
+            corrected_distance = raw_distance - offset_y
+        else:
+            corrected_distance = raw_distance
+
+        # Check cut_off_distance
+        cut_off_distance = laser_info.get('cut_off_distance')
+        if cut_off_distance is not None and corrected_distance > cut_off_distance:
+            logger.info(f"Distance {corrected_distance:.3f}m exceeds cut_off_distance {cut_off_distance:.3f}m for {sensor_id}, marking as inactive")
+            return {
+                "sensor_id": sensor_id,
+                "status": "filtered",
+                "message": f"Distance exceeds cut_off_distance after offset correction",
+                "raw_distance": round(raw_distance, 3),
+                "corrected_distance": round(corrected_distance, 3),
+                "cut_off_distance": cut_off_distance,
+                "timestamp": timestamp
+            }
+
+        # Get baseline distance from offset_x
+        offset_x = laser_info.get('offset_x')
+        if offset_x is not None:
+            baseline_distance = float(offset_x)
+    else:
+        corrected_distance = raw_distance
 
     # Determine movement direction
     if is_moving:
@@ -55,8 +95,9 @@ async def fetch_berthing_data_for_sensor(sensor_id: str) -> Dict[str, Any]:
     result = {
         "sensor_id": sensor_id,
         "timestamp": timestamp,
-        "distance": round(distance, 3),
-        "distance_mm": round(distance * 1000, 0),
+        "distance": round(corrected_distance, 3),
+        "distance_mm": round(corrected_distance * 1000, 0),
+        "raw_distance": round(raw_distance, 3),
         "speed": round(speed, 4),
         "speed_mm_s": round(speed_mm_s, 1),
         "instant_speed": round(instant_speed, 4),
@@ -69,9 +110,17 @@ async def fetch_berthing_data_for_sensor(sensor_id: str) -> Dict[str, Any]:
         "direction": direction,
         "movement_phase": movement_phase,
         "confidence": round(confidence, 2),
-        "stable_distance": round(distance, 3),
+        "stable_distance": round(corrected_distance, 3),
         "status": "active"
     }
+
+    # Include correction information
+    if offset_y is not None:
+        result["offset_y"] = offset_y
+    if cut_off_distance is not None:
+        result["cut_off_distance"] = cut_off_distance
+    if baseline_distance is not None:
+        result["baseline_distance"] = baseline_distance
 
     # Include name_for_pager if available
     if name_for_pager:
@@ -180,27 +229,23 @@ def _process_drift_monitoring_operations(sensor_data: Dict[str, Any]) -> List[Di
     Process drift monitoring operations for individual sensors during drift operations.
 
     Args:
-        sensor_data: Dictionary of sensor data keyed by sensor_id
+        sensor_data: Dictionary of sensor data keyed by sensor_id (with offset corrections already applied)
 
     Returns:
         List of operation results
     """
     operations = []
 
-    logger.info(f"Processing {len(sensor_data)} sensors for drift monitoring")
-
     # Process each sensor individually for drift monitoring
-    for sensor_id, sensor_data in sensor_data.items():
-        if sensor_data.get('status') == 'active':
-            logger.debug(f"Processing drift monitoring for sensor {sensor_id}")
+    for sensor_id, sensor_data_item in sensor_data.items():
+        if sensor_data_item.get('status') == 'active':
+            # Get baseline distance from sensor data (already processed with offset corrections)
+            baseline_distance = sensor_data_item.get('baseline_distance')
 
             # Process drift monitoring for this sensor
-            operation_result = drift_monitor.process_sensor_data(sensor_id, sensor_data)
+            operation_result = drift_monitor.process_sensor_data(sensor_id, sensor_data_item, baseline_distance)
 
             operations.append(operation_result)
-            logger.debug(f"Processed drift monitoring for {sensor_id}: danger_level={operation_result.get('danger_level', 'N/A')}")
-
-    logger.info(f"Total drift monitoring operations processed: {len(operations)}")
     return operations
 
 async def get_all_berthing_data_core() -> Dict[str, Any]:
@@ -210,9 +255,65 @@ async def get_all_berthing_data_core() -> Dict[str, Any]:
     Thread-safe implementation to handle concurrent sensor list changes.
     Includes trilateration operations for drift monitoring.
     """
-    print("DEBUG: get_all_berthing_data_core called")
-    logger.info("get_all_berthing_data_core called")
     result = {}
+
+    # Get current operation info first to determine if we need offset corrections
+    current_operation = device_manager.get_current_operation()
+
+    # Initialize berth_sensors_info for offset corrections
+    berth_sensors_info = None
+
+    # For drift operations, fetch berth sensors information for offset corrections
+    if current_operation.get("operation_type") == "drift":
+        # Try multiple sources for berth_id
+        berth_id = None
+
+        # First, try to get from current operation
+        berth_id = current_operation.get("berthing_id")
+
+        # berth_id should be available from current operation or device manager
+
+        # If still no valid berth_id, try to infer from device manager or use a default
+        if not berth_id or berth_id == 0:
+            # Try to get berth_id from device manager's configured berth_id
+            if hasattr(device_manager, 'berth_id') and device_manager.berth_id:
+                berth_id = device_manager.berth_id
+                logger.info(f"Using berth_id {berth_id} from device manager configuration")
+            else:
+                # Try to get berthing_id from device manager current operation
+                device_operation = device_manager.get_current_operation()
+                if device_operation and device_operation.get("berthing_id") and device_operation["berthing_id"] != 0:
+                    berth_id = device_operation["berthing_id"]
+                    logger.info(f"Using berth_id {berth_id} from device manager current operation")
+
+        logger.info(f"Drift operation detected, final berth_id: {berth_id}")
+
+        if berth_id and berth_id != 0:
+            try:
+                logger.info(f"Fetching berth sensors info for berth {berth_id} to get offset data")
+                berth_sensors_data = await get_lasers_by_berth(berth_id, settings.DB_HOST)
+
+                if berth_sensors_data:
+                    # Organize by sensor_id for easy lookup
+                    berth_sensors_info = {}
+                    for laser in berth_sensors_data:
+                        sensor_id = laser.get('serial')
+                        if sensor_id:
+                            berth_sensors_info[sensor_id] = {
+                                'laser_info': laser,
+                                'sensor_id': sensor_id
+                            }
+                    logger.info(f"Fetched offset data for {len(berth_sensors_info)} sensors from berth {berth_id}")
+
+                else:
+                    logger.warning(f"No berth sensors data returned for berth {berth_id}")
+
+            except Exception as e:
+                logger.error(f"Error fetching berth sensors info for berth {berth_id}: {e}")
+                import traceback
+                logger.error(f"Traceback: {traceback.format_exc()}")
+        else:
+            logger.warning("Drift operation detected but no valid berth_id found for offset corrections")
 
     # Get data from LiDAR manager if available
     if device_manager.lidar_manager:
@@ -227,8 +328,8 @@ async def get_all_berthing_data_core() -> Dict[str, Any]:
             # Double-check sensor is still active (it might have been removed)
             if sensor_id in device_manager.lidar_manager.berthing_mode_sensors and device_manager.lidar_manager.stream_active.get(sensor_id, False):
                 try:
-                    # Reuse the individual sensor data fetching logic
-                    sensor_data = await fetch_berthing_data_for_sensor(sensor_id)
+                    # Reuse the individual sensor data fetching logic with offset corrections
+                    sensor_data = await fetch_berthing_data_for_sensor(sensor_id, berth_sensors_info)
                     sensor_data["data_type"] = "lidar"  # Distinguish LiDAR from laser
                     result[sensor_id] = sensor_data
                 except Exception as e:
@@ -261,31 +362,11 @@ async def get_all_berthing_data_core() -> Dict[str, Any]:
                     "message": str(e)
                 }
 
-    # Get current operation info
-    current_operation = device_manager.get_current_operation()
-
     # Process trilateration operations for drift monitoring
     operations = []
     operation_data = {}
     try:
-        logger.info(f"Current operation: {current_operation}")
-        logger.info(f"Processing {len(result)} sensors for trilateration")
-
-        # For drift operations, ensure sensors have berth_id for trilateration
-        if current_operation.get("operation_type") == "drift":
-            berth_id = current_operation.get("berthing_id")
-            logger.info(f"Drift operation detected, berthing_id: {berth_id}")
-            if berth_id is not None:
-                # Assign berth_id to sensors that don't have it (for testing with fake sensors)
-                for sensor_id, sensor_data in result.items():
-                    if sensor_data.get("berth_id") is None:
-                        sensor_data["berth_id"] = berth_id
-                        logger.info(f"Assigned berth_id {berth_id} to sensor {sensor_id} for trilateration")
-            else:
-                logger.info("Drift operation detected but berthing_id is None")
-
         operations = _process_drift_monitoring_operations(result)
-        logger.info(f"Processed {len(operations)} drift monitoring operations")
 
         # For drift operations, include operation-specific data
         if current_operation.get("operation_type") == "drift":

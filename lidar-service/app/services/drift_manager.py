@@ -198,13 +198,14 @@ class DriftMonitor:
             logger.error(f"Error monitoring sensor drift for {sensor_id}: {e}")
             return 0
 
-    def process_sensor_data(self, sensor_id: str, sensor_data: Dict) -> Dict[str, Any]:
+    def process_sensor_data(self, sensor_id: str, sensor_data: Dict, baseline_distance: Optional[float] = None) -> Dict[str, Any]:
         """
         Process sensor data for drift monitoring.
 
         Args:
             sensor_id: Sensor identifier
             sensor_data: Sensor data dictionary
+            baseline_distance: Baseline distance from offset_x (optional)
 
         Returns:
             Dictionary with drift monitoring results
@@ -227,7 +228,7 @@ class DriftMonitor:
             # Get historical average for context
             historical_avg = self.get_historical_average(sensor_id, current_time)
 
-            return {
+            result = {
                 'operation_name': f'drift_monitor_{sensor_id}',
                 'danger_level': danger_level,
                 'sensor_id': sensor_id,
@@ -235,6 +236,13 @@ class DriftMonitor:
                 'historical_average': historical_avg,
                 'timestamp': current_time
             }
+
+            # Include baseline distance if provided
+            if baseline_distance is not None:
+                result['baseline_distance'] = baseline_distance
+                logger.debug(f"Using baseline distance {baseline_distance:.3f}m for sensor {sensor_id}")
+
+            return result
 
         except Exception as e:
             logger.error(f"Error processing sensor data for {sensor_id}: {e}")
