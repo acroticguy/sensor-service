@@ -265,28 +265,8 @@ async def get_all_berthing_data_core() -> Dict[str, Any]:
 
     # For drift operations, fetch berth sensors information for offset corrections
     if current_operation.get("operation_type") == "drift":
-        # Try multiple sources for berth_id
-        berth_id = None
-
-        # First, try to get from current operation
-        berth_id = current_operation.get("berthing_id")
-
-        # berth_id should be available from current operation or device manager
-
-        # If still no valid berth_id, try to infer from device manager or use a default
-        if not berth_id or berth_id == 0:
-            # Try to get berth_id from device manager's configured berth_id
-            if hasattr(device_manager, 'berth_id') and device_manager.berth_id:
-                berth_id = device_manager.berth_id
-                logger.info(f"Using berth_id {berth_id} from device manager configuration")
-            else:
-                # Try to get berthing_id from device manager current operation
-                device_operation = device_manager.get_current_operation()
-                if device_operation and device_operation.get("berthing_id") and device_operation["berthing_id"] != 0:
-                    berth_id = device_operation["berthing_id"]
-                    logger.info(f"Using berth_id {berth_id} from device manager current operation")
-
-        logger.info(f"Drift operation detected, final berth_id: {berth_id}")
+        # Get berth_id from device manager (set during operation start)
+        berth_id = device_manager.berth_id if hasattr(device_manager, 'berth_id') and device_manager.berth_id else None
 
         if berth_id and berth_id != 0:
             try:
