@@ -1,5 +1,5 @@
 from .device_manager import device_manager
-from .trilateration_manager import trilateration_manager
+from .drift_manager import drift_monitor
 from ..core.logging_config import logger
 from typing import Dict, Any, List
 import time
@@ -175,9 +175,9 @@ def _group_sensors_by_berth_and_type(sensor_data: Dict[str, Any]) -> Dict[int, D
 
     return grouped
 
-def _process_trilateration_operations(sensor_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _process_drift_monitoring_operations(sensor_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
-    Process trilateration operations for sensor pairs in each berth.
+    Process drift monitoring operations for individual sensors during drift operations.
 
     Args:
         sensor_data: Dictionary of sensor data keyed by sensor_id
@@ -186,52 +186,21 @@ def _process_trilateration_operations(sensor_data: Dict[str, Any]) -> List[Dict[
         List of operation results
     """
     operations = []
-    grouped_sensors = _group_sensors_by_berth_and_type(sensor_data)
 
-    logger.info(f"Grouped sensors for trilateration: {grouped_sensors}")
+    logger.info(f"Processing {len(sensor_data)} sensors for drift monitoring")
 
-    for berth_id, type_groups in grouped_sensors.items():
-        for sensor_type, sensors in type_groups.items():
-            logger.info(f"Berth {berth_id}, type {sensor_type}: {len(sensors)} sensors")
-            # Only process if we have at least 2 sensors of the same type
-            if len(sensors) >= 2:
-                # Create pairs from available sensors (assuming no more than 2 as per requirements)
-                if len(sensors) == 2:
-                    sensor1, sensor2 = sensors[0], sensors[1]
-                    pair_key = f"{sensor_type}_{sensor1['sensor_id']}_{sensor2['sensor_id']}"
+    # Process each sensor individually for drift monitoring
+    for sensor_id, sensor_data in sensor_data.items():
+        if sensor_data.get('status') == 'active':
+            logger.debug(f"Processing drift monitoring for sensor {sensor_id}")
 
-                    logger.info(f"Processing trilateration pair: {pair_key}")
+            # Process drift monitoring for this sensor
+            operation_result = drift_monitor.process_sensor_data(sensor_id, sensor_data)
 
-                    # Process trilateration for this pair
-                    operation_result = trilateration_manager.process_sensor_pair(
-                        berth_id=berth_id,
-                        sensor_pair_key=pair_key,
-                        sensor1_data=sensor1['data'],
-                        sensor2_data=sensor2['data'],
-                        sensor1_pos=sensor1['position'],
-                        sensor2_pos=sensor2['position']
-                    )
+            operations.append(operation_result)
+            logger.debug(f"Processed drift monitoring for {sensor_id}: danger_level={operation_result.get('danger_level', 'N/A')}")
 
-                    operations.append(operation_result)
-                    logger.info(f"Processed trilateration for berth {berth_id}, pair {pair_key}: danger_level={operation_result.get('danger_level', 'N/A')}")
-                else:
-                    logger.warning(f"More than 2 {sensor_type} sensors in berth {berth_id}, using first 2 only")
-                    # Use first 2 sensors
-                    sensor1, sensor2 = sensors[0], sensors[1]
-                    pair_key = f"{sensor_type}_{sensor1['sensor_id']}_{sensor2['sensor_id']}"
-
-                    operation_result = trilateration_manager.process_sensor_pair(
-                        berth_id=berth_id,
-                        sensor_pair_key=pair_key,
-                        sensor1_data=sensor1['data'],
-                        sensor2_data=sensor2['data'],
-                        sensor1_pos=sensor1['position'],
-                        sensor2_pos=sensor2['position']
-                    )
-
-                    operations.append(operation_result)
-
-    logger.info(f"Total trilateration operations processed: {len(operations)}")
+    logger.info(f"Total drift monitoring operations processed: {len(operations)}")
     return operations
 
 async def get_all_berthing_data_core() -> Dict[str, Any]:
@@ -315,8 +284,8 @@ async def get_all_berthing_data_core() -> Dict[str, Any]:
             else:
                 logger.info("Drift operation detected but berthing_id is None")
 
-        operations = _process_trilateration_operations(result)
-        logger.info(f"Processed {len(operations)} trilateration operations")
+        operations = _process_drift_monitoring_operations(result)
+        logger.info(f"Processed {len(operations)} drift monitoring operations")
 
         # For drift operations, include operation-specific data
         if current_operation.get("operation_type") == "drift":
@@ -328,7 +297,7 @@ async def get_all_berthing_data_core() -> Dict[str, Any]:
 
             operation_data = {
                 "danger_level": max_danger_level,
-                "trilateration_operations": operations
+                "drift_operations": operations
             }
             logger.info(f"Drift operation data: danger_level={max_danger_level}, operations={len(operations)}")
     except Exception as e:
