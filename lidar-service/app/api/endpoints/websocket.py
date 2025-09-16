@@ -112,6 +112,7 @@ class ConnectionManager:
 
                 # Only fetch if there are active global connections
                 if self.global_berthing_connections:
+                    print(f"DEBUG: Global websocket has {len(self.global_berthing_connections)} connections")
                     try:
                         all_data = await get_all_berthing_data_core()
 
@@ -446,6 +447,7 @@ async def websocket_berth_berthing_data_stream(websocket: WebSocket, berth_id: i
 
         while True:
             try:
+                print(f"DEBUG: Berth-specific websocket checking for data, berth {berth_id}")
                 # Check if there's new data available by monitoring the global data
                 current_data = await get_all_berthing_data_core()
                 current_timestamp = current_data.get("_server_timestamp_utc", 0)
@@ -519,6 +521,10 @@ async def websocket_berth_berthing_data_stream(websocket: WebSocket, berth_id: i
                                 deg = math.degrees(math.asin(min(diff / baseline, 1.0)))
 
                     filtered_data["deg"] = deg
+
+                    # Include current operation and operation data
+                    filtered_data["current_operation"] = current_data.get("current_operation", {})
+                    filtered_data["operation_data"] = current_data.get("operation_data", {})
 
                     # Send filtered data
                     await websocket.send_text(json.dumps(filtered_data))

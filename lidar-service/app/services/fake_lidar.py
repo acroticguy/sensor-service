@@ -45,6 +45,11 @@ class FakeLidarSimulator:
         self._CMD_CARTESIAN_CS = _CMD_CARTESIAN_CS
         self._CMD_GET_DEVICE_INFO = _CMD_GET_DEVICE_INFO
 
+        # Distance spike simulation for testing trilateration warnings
+        self._spike_active = False
+        self._spike_duration = 0
+        self._spike_packets_remaining = 0
+
     def connect(self, computerIP, sensorIP, dataPort, cmdPort, imuPort=None, sensor_name_override=""):
         """Simulate connection to fake lidar"""
         self._computerIP = computerIP
@@ -211,14 +216,30 @@ class FakeLidarSimulator:
         timestamp = int(time.time() * 1_000_000_000)  # Nanoseconds since epoch
 
         header = struct.pack('<BBBBLBBQ',
-                           version, slot_id, lidar_id, reserved,
-                           status_code, timestamp_type, data_type, timestamp)
+                            version, slot_id, lidar_id, reserved,
+                            status_code, timestamp_type, data_type, timestamp)
+
+        # Handle spike timing at packet level (not point level)
+        spike_active_for_packet = False
+        if packet_count > 0 and packet_count % 1000 == 0 and not self._spike_active:
+            # Start a new spike
+            self._spike_active = True
+            self._spike_duration = random.randint(200, 300)  # 200-300 packets of spike (2-3 seconds)
+            self._spike_packets_remaining = self._spike_duration
+            logger.info(f"Fake Lidar {self._serial}: STARTING DISTANCE SPIKE at packet {packet_count} (duration: {self._spike_duration} packets / {self._spike_duration/100:.1f} seconds)")
+            spike_active_for_packet = True
+        elif self._spike_active:
+            spike_active_for_packet = True
+            self._spike_packets_remaining -= 1
+            if self._spike_packets_remaining <= 0:
+                self._spike_active = False
+                logger.info(f"Fake Lidar {self._serial}: ENDING DISTANCE SPIKE at packet {packet_count}")
 
         # Generate 100 fake points
         points_data = b''
         for i in range(100):
             # Generate fake point data
-            x, y, z, intensity = self._generate_fake_point(i, packet_count)
+            x, y, z, intensity = self._generate_fake_point(i, packet_count, spike_active_for_packet)
 
             # Pack point data (13 bytes each)
             point_data = struct.pack('<iiiB', x, y, z, intensity)
@@ -226,15 +247,26 @@ class FakeLidarSimulator:
 
         return header + points_data
 
-    def _generate_fake_point(self, point_idx: int, packet_count: int) -> tuple:
+    def _generate_fake_point(self, point_idx: int, packet_count: int, spike_active: bool = False) -> tuple:
         """Generate a fake 3D point with intensity"""
-        # Create some fake objects in the scene
+        # Create some fake objects in the scene (berthing scenario)
         angle = (point_idx / 100.0) * 2 * math.pi  # Full circle
-        distance = 5.0 + random.uniform(-2.0, 3.0)  # 3-8m range
 
-        # Add some variation for multiple objects
-        if packet_count % 10 == 0:  # Every 10 packets, create a closer object
-            distance = 2.0 + random.uniform(-0.5, 1.0)
+        # Base distance for berthing (ship at ~5m from sensors)
+        # Both sensors should measure very similar distances for proper berthing alignment
+        base_distance = 5.0
+
+        # Very small variation (±0.1m) to simulate realistic measurement differences
+        distance = base_distance + random.uniform(-0.1, 0.1)
+
+        # Minimal variation for multiple objects
+        if packet_count % 10 == 0:
+            distance = base_distance + random.uniform(-0.05, 0.05)
+
+        # Apply spike if active for this packet - affects ALL points during spike for visibility
+        if spike_active:
+            # Create a significant distance spike (3.5x normal distance for testing warnings)
+            distance = distance * 3.5  # Apply to base distance
 
         x = int(distance * 1000)  # mm
 

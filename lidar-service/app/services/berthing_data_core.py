@@ -1,6 +1,7 @@
 from .device_manager import device_manager
+from .trilateration_manager import trilateration_manager
 from ..core.logging_config import logger
-from typing import Dict, Any
+from typing import Dict, Any, List
 import time
 
 async def fetch_berthing_data_for_sensor(sensor_id: str) -> Dict[str, Any]:
@@ -76,11 +77,9 @@ async def fetch_berthing_data_for_sensor(sensor_id: str) -> Dict[str, Any]:
     if name_for_pager:
         result["name_for_pager"] = name_for_pager
 
-    # Include berth_id and berthing_id if available
-    if berth_id is not None:
-        result["berth_id"] = berth_id
-    if berthing_id is not None:
-        result["berthing_id"] = berthing_id
+    # Always include berth_id and berthing_id (set to None if not available)
+    result["berth_id"] = berth_id
+    result["berthing_id"] = berthing_id
 
     return result
 
@@ -135,12 +134,115 @@ async def fetch_laser_data_for_device(device_id: str) -> Dict[str, Any]:
 
     return result
 
+def _group_sensors_by_berth_and_type(sensor_data: Dict[str, Any]) -> Dict[int, Dict[str, List[Dict]]]:
+    """
+    Group sensors by berth and sensor type for trilateration processing.
+
+    Args:
+        sensor_data: Dictionary of sensor data keyed by sensor_id
+
+    Returns:
+        Dictionary: berth_id -> sensor_type -> list of sensor data
+    """
+    grouped = {}
+
+    for sensor_id, data in sensor_data.items():
+        berth_id = data.get('berth_id')
+        data_type = data.get('data_type', 'unknown')
+        status = data.get('status', 'unknown')
+
+        # Only include active sensors with valid berth_id
+        if berth_id is not None and status == 'active':
+            if berth_id not in grouped:
+                grouped[berth_id] = {}
+            if data_type not in grouped[berth_id]:
+                grouped[berth_id][data_type] = []
+
+            # Assign test positions for sensors (in real implementation, get from sensor calibration)
+            # For testing: place sensors at positions that work with ~5m distances
+            if len(grouped[berth_id][data_type]) == 0:
+                # First sensor at position (0, 0)
+                position = (0.0, 0.0)
+            else:
+                # Second sensor at position (8, 0) - 8 meters apart for valid trilateration
+                position = (8.0, 0.0)
+
+            grouped[berth_id][data_type].append({
+                'sensor_id': sensor_id,
+                'data': data,
+                'position': position
+            })
+
+    return grouped
+
+def _process_trilateration_operations(sensor_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Process trilateration operations for sensor pairs in each berth.
+
+    Args:
+        sensor_data: Dictionary of sensor data keyed by sensor_id
+
+    Returns:
+        List of operation results
+    """
+    operations = []
+    grouped_sensors = _group_sensors_by_berth_and_type(sensor_data)
+
+    logger.info(f"Grouped sensors for trilateration: {grouped_sensors}")
+
+    for berth_id, type_groups in grouped_sensors.items():
+        for sensor_type, sensors in type_groups.items():
+            logger.info(f"Berth {berth_id}, type {sensor_type}: {len(sensors)} sensors")
+            # Only process if we have at least 2 sensors of the same type
+            if len(sensors) >= 2:
+                # Create pairs from available sensors (assuming no more than 2 as per requirements)
+                if len(sensors) == 2:
+                    sensor1, sensor2 = sensors[0], sensors[1]
+                    pair_key = f"{sensor_type}_{sensor1['sensor_id']}_{sensor2['sensor_id']}"
+
+                    logger.info(f"Processing trilateration pair: {pair_key}")
+
+                    # Process trilateration for this pair
+                    operation_result = trilateration_manager.process_sensor_pair(
+                        berth_id=berth_id,
+                        sensor_pair_key=pair_key,
+                        sensor1_data=sensor1['data'],
+                        sensor2_data=sensor2['data'],
+                        sensor1_pos=sensor1['position'],
+                        sensor2_pos=sensor2['position']
+                    )
+
+                    operations.append(operation_result)
+                    logger.info(f"Processed trilateration for berth {berth_id}, pair {pair_key}: danger_level={operation_result.get('danger_level', 'N/A')}")
+                else:
+                    logger.warning(f"More than 2 {sensor_type} sensors in berth {berth_id}, using first 2 only")
+                    # Use first 2 sensors
+                    sensor1, sensor2 = sensors[0], sensors[1]
+                    pair_key = f"{sensor_type}_{sensor1['sensor_id']}_{sensor2['sensor_id']}"
+
+                    operation_result = trilateration_manager.process_sensor_pair(
+                        berth_id=berth_id,
+                        sensor_pair_key=pair_key,
+                        sensor1_data=sensor1['data'],
+                        sensor2_data=sensor2['data'],
+                        sensor1_pos=sensor1['position'],
+                        sensor2_pos=sensor2['position']
+                    )
+
+                    operations.append(operation_result)
+
+    logger.info(f"Total trilateration operations processed: {len(operations)}")
+    return operations
+
 async def get_all_berthing_data_core() -> Dict[str, Any]:
     """
     Get berthing data for all active sensors and laser devices from the core logic.
     This function will be used by both the HTTP endpoint and the WebSocket emitter.
     Thread-safe implementation to handle concurrent sensor list changes.
+    Includes trilateration operations for drift monitoring.
     """
+    print("DEBUG: get_all_berthing_data_core called")
+    logger.info("get_all_berthing_data_core called")
     result = {}
 
     # Get data from LiDAR manager if available
@@ -190,10 +292,56 @@ async def get_all_berthing_data_core() -> Dict[str, Any]:
                     "message": str(e)
                 }
 
+    # Get current operation info
+    current_operation = device_manager.get_current_operation()
+
+    # Process trilateration operations for drift monitoring
+    operations = []
+    operation_data = {}
+    try:
+        logger.info(f"Current operation: {current_operation}")
+        logger.info(f"Processing {len(result)} sensors for trilateration")
+
+        # For drift operations, ensure sensors have berth_id for trilateration
+        if current_operation.get("operation_type") == "drift":
+            berth_id = current_operation.get("berthing_id")
+            logger.info(f"Drift operation detected, berthing_id: {berth_id}")
+            if berth_id is not None:
+                # Assign berth_id to sensors that don't have it (for testing with fake sensors)
+                for sensor_id, sensor_data in result.items():
+                    if sensor_data.get("berth_id") is None:
+                        sensor_data["berth_id"] = berth_id
+                        logger.info(f"Assigned berth_id {berth_id} to sensor {sensor_id} for trilateration")
+            else:
+                logger.info("Drift operation detected but berthing_id is None")
+
+        operations = _process_trilateration_operations(result)
+        logger.info(f"Processed {len(operations)} trilateration operations")
+
+        # For drift operations, include operation-specific data
+        if current_operation.get("operation_type") == "drift":
+            # Find the highest danger level from all operations
+            max_danger_level = 0
+            for op in operations:
+                if op.get("danger_level", 0) > max_danger_level:
+                    max_danger_level = op["danger_level"]
+
+            operation_data = {
+                "danger_level": max_danger_level,
+                "trilateration_operations": operations
+            }
+            logger.info(f"Drift operation data: danger_level={max_danger_level}, operations={len(operations)}")
+    except Exception as e:
+        logger.error(f"Error processing trilateration operations: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+
     return {
         "sensors": result,
         "count": len(result),
         "berthing_mode_active": berthing_mode_active,
         "synchronized": sync_coordinator_active,
+        "current_operation": current_operation,
+        "operation_data": operation_data,
         "_server_timestamp_utc": time.time() # Add server timestamp here for consistency
     }

@@ -49,6 +49,10 @@ class DeviceManager:
         self.use_laser: bool = False
         self.berth_id: Optional[int] = None
 
+        # Current operation tracking
+        self.current_operation: Optional[OperationType] = None
+        self.current_berthing_id: Optional[int] = None
+
         logger.info("DeviceManager initialized as unified device abstraction layer")
 
     def configure_devices(self, use_lidar: bool = True, use_laser: bool = False, berth_id: Optional[int] = None) -> bool:
@@ -178,6 +182,10 @@ class DeviceManager:
             Dictionary with operation results
         """
         logger.info(f"Starting {operation_type.value} operation for berth {berth_id}, berthing_id {berthing_id}")
+
+        # Set current operation
+        self.current_operation = operation_type
+        self.current_berthing_id = berthing_id
 
         try:
             # Step 1: Query database for lasers associated with this berth via PostgREST
@@ -370,6 +378,11 @@ class DeviceManager:
             Dictionary with stop results
         """
         logger.info(f"Stopping operation for berth {berth_id}")
+
+        # Clear current operation if it was for this berth
+        if self.current_berthing_id == berth_id:
+            self.current_operation = None
+            self.current_berthing_id = None
 
         try:
             # Step 1: Query database for lasers associated with this berth via PostgREST
@@ -909,6 +922,26 @@ class DeviceManager:
         """
         await self.shutdown_devices()
 
+    def get_current_operation(self) -> Dict[str, Any]:
+        """
+        Get information about the currently running operation.
+
+        Returns:
+            Dictionary with current operation info
+        """
+        if self.current_operation:
+            return {
+                "operation_type": self.current_operation.value,
+                "berthing_id": self.current_berthing_id,
+                "active": True
+            }
+        else:
+            return {
+                "operation_type": None,
+                "berthing_id": None,
+                "active": False
+            }
+
     def get_status(self) -> Dict[str, Any]:
         """
         Get comprehensive status of all device managers.
@@ -922,6 +955,7 @@ class DeviceManager:
             "berth_id": self.berth_id,
             "sync_coordinator_active": self.sync_coordinator_active,
             "last_sync_timestamp": self.last_sync_timestamp,
+            "current_operation": self.get_current_operation(),
             "managers": {
                 "lidar": self.lidar_manager is not None,
                 "laser": self.laser_manager is not None
